@@ -302,10 +302,11 @@ export function renderDemoFrame(state: DemoState, columns = 80): FrameRow[] {
       { text: sanitizeCell(state.subtitle), style: "dim" },
     ]);
     blank();
-    const visible = state.phases.slice(0, 4);
+    const maxPhases = state.phases.length > 4 ? 5 : 4;
+    const visible = state.phases.slice(0, maxPhases);
     for (const phase of visible) push(phaseRow(phase, width));
-    for (let index = visible.length; index < 4; index += 1) blank();
-    blank();
+    for (let index = visible.length; index < maxPhases; index += 1) blank();
+    if (maxPhases < 5) blank();
     push(rule(width));
     push([
       { text: " ", style: "plain" },

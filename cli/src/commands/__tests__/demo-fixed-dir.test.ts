@@ -11,7 +11,9 @@ const dirs = vi.hoisted(() => ({ home: "", cwd: "" }));
 const stackMocks = vi.hoisted(() => ({
   runStackQuiet: vi.fn(),
   stopDemoStack: vi.fn(),
-  stageUpdates: [] as Array<{ phases?: Array<{ id: string; status: string }> }>,
+  stageUpdates: [] as Array<{
+    phases?: Array<{ id: string; status: string; label?: string; elapsedMs?: number }>;
+  }>,
 }));
 
 vi.mock("node:os", async (importOriginal) => {
@@ -300,6 +302,26 @@ describe("flisk demo fixed directory", () => {
       expect(seen(id, "active")).toBeGreaterThanOrEqual(0);
       expect(seen(id, "active")).toBeLessThan(seen(id, "done"));
     }
+  });
+
+  it("shows the reset phase with its elapsed time on a second run", async () => {
+    expect(await runDemoCli("demo")).toBe(0);
+    stackMocks.stageUpdates.length = 0;
+
+    expect(await runDemoCli("demo")).toBe(0);
+
+    const resetActive = stackMocks.stageUpdates.findIndex((patch) =>
+      patch.phases?.some((phase) => phase.id === "reset" && phase.status === "active"),
+    );
+    const resetDone = stackMocks.stageUpdates.find((patch) =>
+      patch.phases?.some((phase) => phase.id === "reset" && phase.status === "done"),
+    );
+    expect(resetActive).toBeGreaterThanOrEqual(0);
+    expect(resetDone).toBeDefined();
+    const resetPhase = resetDone?.phases?.find((p) => p.id === "reset");
+    expect(resetPhase?.label).toBe("Resetting the previous demo");
+    expect(resetPhase?.elapsedMs).toBeDefined();
+    expect(resetPhase?.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it("watches the Tilt port that TILT_PORT selected", async () => {

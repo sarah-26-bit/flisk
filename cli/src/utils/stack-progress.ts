@@ -38,10 +38,11 @@ const defaultTiltResourceReader: TiltResourceReader = (port) =>
   });
 
 /** Tilt rows that only exist to run a service. They are never counted as a service. */
-const HELPER_NAME = /^(\(Tiltfile\)|service-discovery-daemon)$|-(yaml|run-only|typecheck)$/;
+const HELPER_NAME = /^(service-discovery-daemon)$|-(yaml|run-only|typecheck)$/;
 
 /** Setup steps that run before the services. They get their own phase label instead of a count. */
 function infraLabel(name: string): string | undefined {
+  if (name === "(Tiltfile)") return "Reading the project";
   if (name === "golden-layers-build") return "Building base images";
   if (name === "init-networks") return "Preparing networks";
   if (name.startsWith("provision-db-")) return "Preparing databases";

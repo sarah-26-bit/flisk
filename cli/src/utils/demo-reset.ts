@@ -5,22 +5,144 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { cliInvocation } from "./cli-invocation.js";
+import {
+  findProjectTiltUpPids,
+  projectComposeProjects,
+  waitForTiltUpExit,
+} from "./down-cleanup.js";
+import { readSavedTiltPort } from "./host-port-config.js";
 import { projectNameAt, readProjectRecords } from "./project-registry.js";
+import { findTiltPortOwner, isForeignTilt } from "./tilt-port-owner.js";
+
+type CommandRunner = (command: string, args: string[]) => string;
+
+const defaultRun: CommandRunner = (command, args) =>
+  execFileSync(command, args, { encoding: "utf-8", stdio: "pipe", windowsHide: true });
 
 /** Stops the `tilt up` processes that run this project's Tiltfile, and waits for them to exit. */
 export type StopTilt = (tiltfile: string) => Promise<void>;
 
 /**
+ * PIDs of running `tilt up` processes belonging to this project, found via the Tiltfile path
+ * and the saved Tilt UI port.
+ */
+export function locateProjectTiltPids(
+  projectDir: string,
+  tiltfile: string = join(projectDir, ".flisk", ".flisk-out", "Tiltfile"),
+  platform = process.platform,
+  commandRunner: CommandRunner = defaultRun,
+): number[] {
+  const pids = new Set<number>();
+  try {
+    for (const pid of findProjectTiltUpPids(tiltfile, platform, commandRunner)) {
+      pids.add(pid);
+    }
+  } catch {
+    // ps error or unsupported platform
+  }
+
+  try {
+    const savedPort = readSavedTiltPort(projectDir);
+    if (savedPort) {
+      const owner = findTiltPortOwner(savedPort, platform, commandRunner);
+      if (owner && !isForeignTilt(owner, projectDir)) {
+        pids.add(owner.pid);
+      }
+    }
+  } catch {
+    // Port check error
+  }
+
+  return [...pids].sort((a, b) => a - b);
+}
+
+/**
+ * The Compose projects belonging to this project that currently exist in Docker.
+ * Combines container working directory matches with known projects from ~/.flisk/projects and project stacks.
+ */
+export function demoComposeProjects(
+  projectDir: string,
+  commandRunner: CommandRunner = defaultRun,
+): string[] {
+  let projectCompose: string[] = [];
+  try {
+    projectCompose = projectComposeProjects(projectDir, commandRunner);
+  } catch {
+    // Docker unavailable or command error
+  }
+  const names = new Set(projectCompose);
+  const projectName = readProjectName(projectDir);
+  if (projectName) {
+    try {
+      const records = readProjectRecords();
+      const record = records.find((r) => r.name === projectName);
+      const owned = ownedComposeProjects(projectName, record?.stacks ?? []);
+      const output = commandRunner("docker", [
+        "ps",
+        "-a",
+        "--format",
+        '{{.Label "com.docker.compose.project"}}',
+      ]);
+      for (const line of output.split(/\r?\n/)) {
+        const proj = line.trim();
+        if (proj && owned.has(proj)) names.add(proj);
+      }
+    } catch {
+      // Docker or project records unavailable
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * Stops this demo's Docker Compose services directly with `docker compose -p <project> down --remove-orphans`.
+ * Does not evaluate the Tiltfile and touches only this project's containers.
+ */
+export function stopDemoCompose(
+  projectDir: string,
+  commandRunner: CommandRunner = defaultRun,
+): void {
+  const projects = demoComposeProjects(projectDir, commandRunner);
+  for (const name of projects) {
+    try {
+      commandRunner("docker", ["compose", "-p", name, "down", "--remove-orphans"]);
+    } catch {
+      // Best effort; continue stopping remaining projects
+    }
+  }
+}
+
+/**
+ * True when this project currently has running processes or containers:
+ * a live `tilt up` process or Docker Compose containers belonging to this project.
+ */
+export function isDemoStackRunning(
+  projectDir: string,
+  platform = process.platform,
+  commandRunner: CommandRunner = defaultRun,
+): boolean {
+  if (!existsSync(join(projectDir, ".flisk", "project.json"))) return false;
+
+  const tiltfile = join(projectDir, ".flisk", ".flisk-out", "Tiltfile");
+  const pids = locateProjectTiltPids(projectDir, tiltfile, platform, commandRunner);
+  if (pids.length > 0) return true;
+
+  const composeProjects = demoComposeProjects(projectDir, commandRunner);
+  if (composeProjects.length > 0) return true;
+
+  return false;
+}
+
+/**
  * Stop the stack of an existing demo folder before the folder is deleted. Deleting the folder alone leaves its
  * containers running, and a standalone Traefik that stays up keeps port 80 for the next run.
  *
- * The live `tilt up` goes first. `flisk down` needs the Tiltfile, and it can be gone or mid-rewrite while the old
- * stack still runs; then `down` fails and the old Tilt keeps the ports and containers the new run needs, so the
- * second demo sat at "0 of 7 services ready". Returns true when a Flisk project was found.
+ * Stops the live `tilt up` directly, then stops this project's Docker Compose containers without evaluating the
+ * Tiltfile (which previously cost ~2 minutes on reset). Returns true when a Flisk project was found.
  */
 export async function stopDemoStack(
   projectDir: string,
-  runDown: (dir: string) => void = runFliskDown,
+  runDown: (dir: string) => void = stopDemoCompose,
   stopTilt: StopTilt = stopRunningTilt,
 ): Promise<boolean> {
   if (!existsSync(join(projectDir, ".flisk", "project.json"))) return false;
@@ -31,16 +153,34 @@ export async function stopDemoStack(
   return true;
 }
 
-async function stopRunningTilt(tiltfile: string): Promise<void> {
-  const { findProjectTiltUpPids, stopProjectTiltUp, waitForTiltUpExit } = await import(
-    "./down-cleanup.js"
+export async function stopRunningTilt(
+  tiltfile: string,
+  platform = process.platform,
+  commandRunner: CommandRunner = defaultRun,
+): Promise<void> {
+  const projectRoot = tiltfile.replace(/[\\/]\.flisk[\\/]\.flisk-out[\\/]Tiltfile$/i, "");
+  const pids = locateProjectTiltPids(
+    projectRoot || resolve(tiltfile, "../../.."),
+    tiltfile,
+    platform,
+    commandRunner,
   );
-  if (findProjectTiltUpPids(tiltfile).length === 0) return;
-  stopProjectTiltUp(tiltfile);
-  await waitForTiltUpExit(tiltfile);
+  if (pids.length === 0) return;
+
+  for (const pid of pids) {
+    try {
+      commandRunner("kill", ["-TERM", String(pid)]);
+    } catch {
+      // Already exited or permission
+    }
+  }
+
+  await waitForTiltUpExit(tiltfile, 8000, (tf) =>
+    findProjectTiltUpPids(tf, platform, commandRunner),
+  );
 }
 
-function runFliskDown(projectDir: string): void {
+export function runFliskDown(projectDir: string): void {
   const [command, ...prefix] = cliInvocation();
   execFileSync(command, [...prefix, "down", "--yes"], {
     cwd: projectDir,

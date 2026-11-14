@@ -271,6 +271,20 @@ describe("readStackProgress on the demo's real resource list", () => {
     expect(progress).toMatchObject({ total: 1, building: 0, pending: 1 });
   });
 
+  it("labels the first Tiltfile evaluation as Reading the project", async () => {
+    tiltAnswers(
+      JSON.stringify({
+        items: [
+          row("(Tiltfile)", "in_progress", "not_applicable"),
+          row("menu-api", "pending", "pending"),
+        ],
+      }),
+    );
+    const progress = await readStackProgress(10350);
+    expect(progress?.infraPhase).toBe("Reading the project");
+    expect(progress).toMatchObject({ total: 1, building: 0, pending: 1 });
+  });
+
   it("still reports a failed infrastructure step", async () => {
     tiltAnswers(JSON.stringify({ items: [row("golden-layers-build", "error", "not_applicable")] }));
     const progress = await readStackProgress(10350);

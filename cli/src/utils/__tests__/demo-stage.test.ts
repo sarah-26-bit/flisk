@@ -81,6 +81,24 @@ describe("renderDemoFrame", () => {
     expect(text).toContain("3 of 6 services ready · 2 building");
   });
 
+  it("renders 5 phases (including reset) within the fixed FRAME_ROWS height", () => {
+    const state = baseState({
+      phases: [
+        { id: "reset", label: "Resetting the previous demo", status: "done", elapsedMs: 1200 },
+        { id: "fetch", label: "Reusing the demo", status: "done", elapsedMs: 300 },
+        { id: "config", label: "Generating project config", status: "done", elapsedMs: 1500 },
+        { id: "deps", label: "Installing dependencies", status: "done", elapsedMs: 2500 },
+        { id: "start", label: "Starting services", status: "active" },
+      ],
+    });
+    const rows = renderDemoFrame(state, 80);
+    expect(rows).toHaveLength(FRAME_ROWS);
+    const text = frameToPlain(rows).join("\n");
+    expect(text).toContain("Resetting the previous demo");
+    expect(text).toContain("Reusing the demo");
+    expect(text).toContain("Starting services");
+  });
+
   it("puts the running URLs and the version on the finished frame", () => {
     const text = frameToPlain(
       renderDemoFrame(

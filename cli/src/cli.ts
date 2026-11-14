@@ -154,6 +154,7 @@ if (templateArg) {
   // Reusing an existing checkout is what keeps a second take free: the clone and the
   // dependency install are skipped, so the recording starts on the interesting part.
   let reused = false;
+  let needsReset = false;
   if (fixedDir && existsSync(destination)) {
     if (!existsSync(join(destination, ".flisk", "project.json"))) {
       console.log(chalk.yellow(`${destination} already exists and is not a Flisk project.`));
@@ -173,22 +174,6 @@ if (templateArg) {
       process.exit(0);
     }
 
-    // Take the old stack down before its folder goes, so a Traefik left behind does not keep port 80.
-    // If it cannot be stopped, deleting the folder would leave containers running that nothing can stop.
-    try {
-      await stopDemoStack(destination);
-    } catch (error) {
-      console.error(
-        chalk.red(`❌ Could not stop the previous demo stack: ${(error as Error).message}`),
-      );
-      console.error(
-        chalk.gray(
-          `   Run \`flisk down\` in ${destination}, then run the demo again. Nothing was deleted.`,
-        ),
-      );
-      process.exit(1);
-    }
-
     if (keep) {
       reused = true;
     } else {
@@ -196,8 +181,9 @@ if (templateArg) {
         console.log(chalk.gray("Nothing was deleted. Use --keep to reuse the folder."));
         process.exit(1);
       }
-      rmSync(destination, { recursive: true, force: true });
     }
+
+    needsReset = true;
   }
 
   // Docker on Colima is only usable while the VM is up, and a stopped VM looks like a
@@ -211,6 +197,15 @@ if (templateArg) {
   }
 
   let phases: DemoPhase[] = [
+    ...(needsReset
+      ? [
+          {
+            id: "reset",
+            label: "Resetting the previous demo",
+            status: "pending" as DemoPhaseStatus,
+          },
+        ]
+      : []),
     {
       id: "fetch",
       label: reused ? "Reusing the demo" : "Fetching the demo",
@@ -239,6 +234,31 @@ if (templateArg) {
   };
 
   const logLines: string[] = [`flisk ${pkg.version} ${templateArg}`, `cwd: ${destination}`];
+
+  if (needsReset) {
+    setPhase("reset", "active");
+    const resetStarted = Date.now();
+    try {
+      await stopDemoStack(destination);
+      setPhase("reset", "done", Date.now() - resetStarted);
+    } catch (error) {
+      setPhase("reset", "failed");
+      console.error(
+        chalk.red(`❌ Could not stop the previous demo stack: ${(error as Error).message}`),
+      );
+      console.error(
+        chalk.gray(
+          `   Run \`flisk down\` in ${destination}, then run the demo again. Nothing was deleted.`,
+        ),
+      );
+      process.exit(1);
+    }
+
+    if (!reused) {
+      rmSync(destination, { recursive: true, force: true });
+    }
+  }
+
   setPhase("fetch", "active");
 
   // 1. Clone (or reuse) and install the CLI. Both are silent so the frame on screen is the
